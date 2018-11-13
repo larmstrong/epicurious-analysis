@@ -1,0 +1,281 @@
+---
+title: "Clean Epicurious Data"
+author: "Leonard Armstrong"
+date: "11/5/2018"
+output: word_document
+---
+
+This script is responsible for preparing the raw Epicurious data for further statistical analysis. The raw data file is assumed to be located in the current working directory.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LIBRARIES
+
+Load any required libraries
+
+```{r load_libraries}
+
+library("dplyr")
+library("stringi")
+library("ggplot2")
+library("datasets")
+```
+
+## READ RECIPE DATA
+
+Read Epicurious recipe data in from a CSV file, [downloaded from Kaggle](https://www.kaggle.com/hugodarwood/epirecipes).
+
+```{r read_data echo=FALSE}
+
+# Local location of recipe CSV file from Kaggle
+recipe.csv.filename <- "epi_r.csv"
+
+# Specifying "stringsAsFactors = FALSE" will prevent the title from being
+# coerced into factors. 
+recipe.data <- read.csv(recipe.csv.filename,
+                        header = TRUE, 
+                        stringsAsFactors = FALSE)
+
+# Record original data volume.
+volumes = c(original = nrow(recipe.data))
+
+```
+
+## REMOVE RECORDS WITH NA NUMERIC DATA
+
+Remove records that have no data (NA) in one or more of the five quantitative categories.
+
+```{r remove_nas echo=FALSE}
+
+# Remove records with any numeric value set to NA.
+recipe.data <- recipe.data %>%
+  filter(!is.na(recipe.data$rating) &
+           !is.na(recipe.data$calories) &
+           !is.na(recipe.data$protein) &
+           !is.na(recipe.data$fat) &
+           !is.na(recipe.data$sodium))
+
+# Capture volume after removal of NAs
+volumes <- c(volumes, na.removal = nrow(recipe.data))
+
+```
+
+## REMOVE RECORDS WITH IMPOSSIBLE DATA VALUES
+
+Remove records that have "impossible" data values
+1. Ratings of 0. Ratings start with 1 "fork" so a 0 rating is not possible.
+2. Calories of 0. Unless its a recipe for water, recipes have to have more than 0 calories.
+
+```{r remove_impossible_values echo=FALSE}
+
+# Since ratings start with 1 "fork" we remove any recipe with a 0 rating
+recipe.data <- recipe.data %>%
+  filter(recipe.data$rating > 0) 
+
+# And remove any 0 calorie recipes
+recipe.data <- recipe.data %>%
+  filter(recipe.data$calories > 0) 
+
+# Capture volume after removal of NAs
+volumes <- c(volumes, impossible.values.removal = nrow(recipe.data))
+
+```
+
+# REMOVE OUTLIER DATA
+
+We also eliminate any outliers. This will essentially get rid of ridiculously high numbers that were clearly in error (e.g., 200,000 calories) as well as eliminate some recipes that have been rated on an entire recipe basis rather than on a per-serving basis.
+
+```{r remove_outliers}
+
+# Define names for the 6 numeric attributes (variables).
+var.names = c("Rating", "Calories", "Protien", "Fat", "Sodium")
+
+# We will use the boxplot function to determine outliers. Boxplot, by default,
+# generates upper and lower limits based on no more than 1.5 x the inter-
+# quartile range (IQR). Any data point below min or above max will be am
+# outlier.
+recipe.bp <- 
+  boxplot(recipe.data$rating, 
+          recipe.data$calories, 
+          recipe.data$protein, 
+          recipe.data$fat, 
+          recipe.data$sodium,
+          names = var.names, 
+          plot = FALSE) # Prevent onscreen plot. Only capture the data.
+
+## Define symobolic names to make indexing the results more readable.
+# Result row names
+min.index <- 1
+max.index <- 5
+# Result column names
+calories.index <- 2
+protein.index  <- 3
+fat.index      <- 4
+sodium.index   <- 5
+
+# Capture key result values into symbolic names
+calories.low <- recipe.bp$stats[min.index, calories.index]
+calories.hi  <- recipe.bp$stats[max.index, calories.index]
+protein.low  <- recipe.bp$stats[min.index, protein.index]
+protein.hi   <- recipe.bp$stats[max.index, protein.index]
+fat.low      <- recipe.bp$stats[min.index, fat.index]
+fat.hi       <- recipe.bp$stats[max.index, fat.index]
+sodium.low   <- recipe.bp$stats[min.index, sodium.index]
+sodium.hi    <- recipe.bp$stats[max.index, sodium.index]
+
+# Remove records with calorie outliers
+recipe.data <- recipe.data %>%
+  filter(between(recipe.data$calories, calories.low, calories.hi))
+
+# Remove records with protein outliers
+recipe.data <- recipe.data %>%
+  filter(between(recipe.data$protein, protein.low, protein.hi))
+
+# Remove records with fat outliers
+recipe.data <- recipe.data %>%
+  filter(between(recipe.data$fat, fat.low, fat.hi))
+
+# Remove records with sodium outliers.
+recipe.data <- recipe.data %>%
+  filter(between(recipe.data$sodium, sodium.low, sodium.hi))
+
+# Capture volume after removal of outliers
+volumes <- c(volumes, outliers = nrow(recipe.data))
+
+```
+
+# REMOVE DUPLICATE RECORDS
+
+Remove all but the first instance of duplicate records. Records are determined to be duplicates if **all** of the following are true.
+1. The titles are identical
+2. The calories are identical
+3. The sodium grams are identical
+4. The fat grams are identical
+5. The protein grams are identical
+
+```{r remove_duplicates}
+
+# Remove duplicates. Records have their title, calories, sodium, fat, and
+# protein values concatenated into one string to simplify the comparison.
+recipe.data <- 
+  recipe.data[
+    !duplicated(
+      stri_join(
+        recipe.data$title,
+        recipe.data$calories, 
+        recipe.data$sodium, 
+        recipe.data$fat, 
+        recipe.data$protein)), ]
+
+# Capture volume after removal of duplicates
+volumes <- c(volumes, duplicates = nrow(recipe.data))
+
+```
+
+# Elimination Report
+
+```{r}
+
+volumes_df <- data.frame(
+  Category = c("NAs in required data", "Data containing impossible values",
+               "Outliers", "Duplicates", "Usable data"),
+  Volume = c(volumes["original"]-volumes["na.removal"],
+             volumes["na.removal"]-volumes["impossible.values.removal"],
+             volumes["impossible.values.removal"]-volumes["outliers"],
+             volumes["outliers"]-volumes["duplicates"],
+             volumes["duplicates"]))
+volumes_df$Percent <- (volumes_df$Volume/volumes["original"])*100
+
+
+cat("Report on the Volume of Recipes Eliminated\n")
+cat("------ -- --- ------ -- ------- ----------\n")
+cat("\n              Original Volume: ", volumes["original"])
+cat("\n Volume with NA data elements: ", 
+    volumes["original"]-volumes["na.removal"])
+cat("\nVolume with impossible values: ", 
+    volumes["na.removal"]-volumes["impossible.values.removal"])  
+cat("\n           Volume of outliers: ", 
+    volumes["impossible.values.removal"]-volumes["outliers"])
+cat("\n         Volume of duplicates: ", 
+    volumes["outliers"]-volumes["duplicates"])
+cat("\n                    Remaining: ", volumes["duplicates"])
+
+elim_g <- 
+  ggplot(volumes_df[order(volumes_df$Volume), ], 
+         aes(x= "", y=Percent, fill=Category)) +
+  geom_bar(stat="identity") +
+  geom_text( aes(label = Volume), size = 4, vjust=2, position = "stack") +
+  labs(title="Breakdown of Recipes Discarded/Remaining After Data Cleaning") +
+  labs(x = "Epicurious Recipe Dataset (Bar labels are actual volumes)") +
+  labs(y = "Percent of Original Recipe List")
+elim_g
+
+```
+
+# Remove Categories with Insufficient data
+
+At this point we will trim the dataset horizontally. That is, instead of removing rows of data, we will remove columns from the category section that have less than 10 recipes in that category.
+
+One exception to this will be categories representing US states. Those will be kept in the dataset 
+
+```{r}
+# Get the counts of recipes that are part of each category.
+category_counts <- unlist(lapply(X = recipe.data[,-1:-6], FUN = sum))
+
+# Now focus only on those with low counts.
+low_counts <- category_counts[category_counts < 10]
+state_names <- chartr(" ", ".", tolower(state.name))
+
+
+#TBD: Eliminate the low columns but leave the states in.
+```
+
+
+# Load the JSON data
+
+This section will run some tests to create a new data frame from the JSON data. Presently there are no plans to use the JSON data, but it is available if needed.
+
+```{r}
+
+# Load the JSON library
+library("rjson")
+
+# FUNCTION: jsonField.to.vector
+# PARAM jsonData: A JSON list data structure, as output by rjson::fromJSON()
+# PARAM fieldName: The name of the JSON list item/field whose data elements
+#   are to be returned in a vector form.
+# A helper function that will take in a JSON data list and returns a vector
+# form of one of the lists's top-level fields.
+jsonField.to.vector <- function (jsonData, fieldName) {
+  unlist(
+    lapply(
+      jsonData,
+      function(x) {
+        return(ifelse (is.null(x[[fieldName]]), NA, x[[fieldName]]))
+      } # anonymous function
+    ) # lapply
+  ) # unlist
+} # jsonField.to.vector
+
+# Relative location of the JSON recipe data.
+recipe.json.filename <- "full_format_recipes.json"
+
+# Read the JSON recipe data.
+recipe.extendedData <- fromJSON(file = recipe.json.filename)
+
+# Create a vector of titles (char data)
+title <- trimws(jsonField.to.vector(recipe.extendedData, "title"), 
+                which = "both")
+
+# Create vectors of rating, fat, calories (numeric data)
+rating <- jsonField.to.vector(recipe.extendedData, "rating")
+fat <- jsonField.to.vector(recipe.extendedData, "fat")
+calories <- jsonField.to.vector(recipe.extendedData, "calories")
+
+```
+
+
+
+
